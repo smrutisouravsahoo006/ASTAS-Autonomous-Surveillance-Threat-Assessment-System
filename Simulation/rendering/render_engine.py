@@ -15,6 +15,7 @@ try:
 except ImportError:
     PANDA3D_AVAILABLE = False
     print("⚠ Panda3D not available - rendering disabled")
+    ShowBase = object          # harmless placeholder so class body parses
 
 
 class RenderMode(Enum):
@@ -152,7 +153,7 @@ class RenderEngine(ShowBase):
         grid_node.setName("grid")
     
     def create_box(self, name: str, position: np.ndarray, size: np.ndarray,
-                   color: Tuple[float, float, float, float] = (0.8, 0.8, 0.8, 1.0)) -> NodePath: # type: ignore
+                   color: Tuple[float, float, float, float] = (0.8, 0.8, 0.8, 1.0)) -> object:
         """
         Create box mesh
         
@@ -182,7 +183,7 @@ class RenderEngine(ShowBase):
         return box
     
     def create_sphere(self, name: str, position: np.ndarray, radius: float,
-                     color: Tuple[float, float, float, float] = (0.8, 0.2, 0.2, 1.0)) -> NodePath: # type: ignore
+                     color: Tuple[float, float, float, float] = (0.8, 0.2, 0.2, 1.0)) -> object:
         """Create sphere mesh"""
         if not self.available:
             return None
@@ -200,7 +201,7 @@ class RenderEngine(ShowBase):
         return sphere
     
     def create_capsule(self, name: str, position: np.ndarray, radius: float, height: float,
-                      color: Tuple[float, float, float, float] = (0.2, 0.8, 0.2, 1.0)) -> NodePath: # type: ignore
+                      color: Tuple[float, float, float, float] = (0.2, 0.8, 0.2, 1.0)) -> object:
         """Create capsule mesh (for humans)"""
         if not self.available:
             return None

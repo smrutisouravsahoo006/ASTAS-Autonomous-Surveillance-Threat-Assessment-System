@@ -3,9 +3,14 @@ Building Module - Static Structures
 Creates 3D buildings with collision
 """
 import numpy as np
-import pybullet as p
 from dataclasses import dataclass
 from typing import Tuple, Optional
+
+try:
+    import pybullet as p
+    PYBULLET_AVAILABLE = True
+except ImportError:
+    PYBULLET_AVAILABLE = False
 
 @dataclass
 class Building:
@@ -21,6 +26,10 @@ class Building:
     
     def create_physics(self, physics_client):
         """Create physics body in PyBullet"""
+        if not PYBULLET_AVAILABLE:
+            print("⚠  PyBullet not available, skipping physics creation")
+            return None
+
         half_extents = self.size / 2.0
         
         # Collision shape
@@ -76,6 +85,10 @@ class Wall:
     
     def create_physics(self, physics_client):
         """Create wall physics"""
+        if not PYBULLET_AVAILABLE:
+            print("⚠  PyBullet not available, skipping physics creation")
+            return None
+
         # Calculate center and dimensions
         center = (self.start + self.end) / 2.0
         center[2] = self.height / 2.0

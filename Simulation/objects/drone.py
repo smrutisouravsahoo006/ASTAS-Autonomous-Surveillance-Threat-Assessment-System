@@ -144,4 +144,3 @@ if __name__ == "__main__":
     print(f"\nDrone 2: {len(drone2.patrol_points)} 3D waypoints")
     
     print("\n✓ Drone module OK")
-

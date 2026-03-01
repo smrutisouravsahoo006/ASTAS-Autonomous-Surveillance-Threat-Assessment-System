@@ -1,90 +1,110 @@
-"""
-Static Objects Module
-Buildings, walls, and ground planes
-"""
+import numpy as np
 
-import numpy as np 
-from dataclasses import dataclass
-from typing import List, Tuple
+try:
+    from .base_objects import SimulationObject, ObjectType, Transform
+except ImportError:
+    from base_objects import SimulationObject, ObjectType, Transform
 
 
-@dataclass
-class Building:
-    """Static building structure"""
-    name: str
-    position: np.ndarray
-    size: np.ndarray
-    color: Tuple[float, float, float, float] = (0.6, 0.6, 0.6, 1.0)
+# =========================================================
+# BASE STATIC OBJECT
+# =========================================================
+
+class StaticObject(SimulationObject):
+    def __init__(self, name, position, color=None, **kwargs):
+        transform = Transform(
+            position=np.array(position, dtype=float),
+            rotation=np.zeros(3, dtype=float),
+        )
+        super().__init__(name, ObjectType.STATIC, transform)
+        self.color             = color
+        self.render_properties = kwargs
+
+    @property
+    def position(self) -> np.ndarray:
+        return self.transform.position
+
+    @position.setter
+    def position(self, value):
+        self.transform.position = np.array(value, dtype=float)
+
+
+# =========================================================
+# BUILDING
+# =========================================================
+
+class Building(StaticObject):
+    def __init__(self, name, position, size, color=None, **kwargs):
+        super().__init__(name, position, color=color, **kwargs)
+        self.size = np.array(size, dtype=float)
 
     def get_corners(self):
-        """Get corner points of building footprint"""
-        x, y, z = self.position
-        w, d, h = self.size
+        x, y, z  = self.transform.position
+        dx, dy, dz = self.size / 2
         return [
-            [x - w/2, y - d/2, z],
-            [x + w/2, y - d/2, z],
-            [x + w/2, y + d/2, z],
-            [x - w/2, y + d/2, z]
+            [x - dx, y - dy],
+            [x + dx, y - dy],
+            [x + dx, y + dy],
+            [x - dx, y + dy],
         ]
 
 
-@dataclass
-class Wall:
-    """Wall or fence structure"""
-    name: str
-    start: np.ndarray
-    end: np.ndarray
-    height: float  # FIXED: was 'heigth'
-    thickness: float = 0.2  # FIXED: Added default value
-    color: Tuple[float, float, float, float] = (0.5, 0.3, 0.1, 1.0)
-    
+# =========================================================
+# WALL
+# =========================================================
+
+class Wall(StaticObject):
+    def __init__(self, name, start, end, height=3.0, thickness=0.2, color=None, **kwargs):
+        start    = np.array(start, dtype=float)
+        end      = np.array(end,   dtype=float)
+        position = (start + end) / 2
+        if color is None:
+            color = (0.65, 0.55, 0.40, 1.0)   # default tan/brown
+        super().__init__(name, position, color=color, **kwargs)
+        self.start     = start
+        self.end       = end
+        self.height    = float(height)
+        self.thickness = float(thickness)
+
     def get_length(self):
-        """Get wall length in meters"""
-        return np.linalg.norm(self.end - self.start)
-    
-    def get_center(self):
-        """Get center point of wall"""
-        return (self.start + self.end) / 2.0
+        return float(np.linalg.norm(self.end - self.start))
+
+    @property
+    def length(self):
+        """Direct attribute access: wall.length (used by simulation_3d_launch)."""
+        return self.get_length()
 
 
-@dataclass
-class Ground:
-    """Ground plane with grid"""
-    name: str = "ground"
-    size: float = 100.0
-    color: Tuple[float, float, float, float] = (0.3, 0.5, 0.3, 1.0)
-    grid_spacing: float = 5.0
+# =========================================================
+# OBSTACLE
+# =========================================================
+
+class Obstacle(StaticObject):
+    def __init__(self, name, position, size, color=None, **kwargs):
+        super().__init__(name, position, color=color, **kwargs)
+        self.size = np.array(size, dtype=float)
 
 
-if __name__ == "__main__":
-    print("Testing Static Objects...")
-    
-    # Test Building
-    building = Building(
-        name="warehouse",
-        position=np.array([10, 10, 0]),
-        size=np.array([20, 15, 8])
-    )
-    print(f"Building: {building.name}")
-    print(f"  Corners: {len(building.get_corners())} points")
-    
-    # Test Wall - FIXED: using 'height' not 'heigth'
-    wall = Wall(
-        name="fence",
-        start=np.array([0, 0, 0]),
-        end=np.array([10, 0, 0]),
-        height=3.0  # FIXED: correct parameter name
-        # thickness will use default value 0.2
-    )
-    print(f"\nWall: {wall.name}")
-    print(f"  Length: {wall.get_length():.1f}m")
-    print(f"  Height: {wall.height}m")
-    print(f"  Thickness: {wall.thickness}m")
-    print(f"  Center: {wall.get_center()}")
-    
-    # Test Ground
-    ground = Ground()
-    print(f"\nGround: {ground.name}")
-    print(f"  Size: {ground.size}m")
-    
-    print("\n✓ Static objects module OK")
+# =========================================================
+# TREE
+# =========================================================
+
+class Tree(StaticObject):
+    def __init__(self, name, position, height=5.0, trunk_radius=0.3, color=None, **kwargs):
+        if color is None:
+            color = (0.20, 0.55, 0.20, 1.0)   # default green
+        super().__init__(name, position, color=color, **kwargs)
+        self.height        = float(height)
+        self.trunk_radius  = float(trunk_radius)
+        self.canopy_radius = float(trunk_radius) * 3
+        # Alias used by simulation_3d_launch: obj.radius
+        self.radius        = float(trunk_radius)
+
+
+# =========================================================
+# GROUND
+# =========================================================
+
+class Ground(StaticObject):
+    def __init__(self):
+        super().__init__("ground", [0.0, 0.0, 0.0])

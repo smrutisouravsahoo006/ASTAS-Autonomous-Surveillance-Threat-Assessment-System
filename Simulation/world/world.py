@@ -1,638 +1,241 @@
-"""
-Simulation World Module
-Main world container for all simulation objects, sensors, and zones
-"""
-
 import numpy as np
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import List, Dict, Any
+
+
+# =========================================================
+# ZONE DEFINITIONS
+# =========================================================
+
+ZONE_COLORS = {
+    "restricted": (1.0, 0.2, 0.2, 1.0),
+    "caution":    (1.0, 0.8, 0.0, 1.0),
+    "safe":       (0.2, 1.0, 0.2, 1.0),
+}
+
+class Zone:
+    def __init__(self, name: str, zone_type: str, polygon: List[List[float]]):
+        self.name      = name
+        self.zone_type = zone_type
+        self.polygon   = polygon
+        self.color     = ZONE_COLORS.get(zone_type, (0.5, 0.5, 0.5, 1.0))
 
 
 @dataclass
-class Zone:
-    """Defined zone with security classification"""
-    name: str
-    type: str  # 'safe', 'caution', 'restricted'
-    polygon: np.ndarray
-    color: tuple = (1.0, 0.0, 0.0, 0.3)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    
-    def __post_init__(self):
-        """Set color based on zone type"""
-        if self.type == 'restricted':
-            self.color = (1.0, 0.0, 0.0, 0.3)  # Red
-        elif self.type == 'caution':
-            self.color = (1.0, 1.0, 0.0, 0.3)  # Yellow
-        elif self.type == 'safe':
-            self.color = (0.0, 1.0, 0.0, 0.3)  # Green
-        else:
-            self.color = (0.5, 0.5, 0.5, 0.3)  # Gray
+class ZoneViolation:
+    object_name: str
+    zone_name:   str
+    zone_type:   str
+    position:    np.ndarray
+    timestamp:   float
 
+    def __getitem__(self, key: str):
+        """Dict-style access for backward compatibility with main.py."""
+        _MAP = {
+            'object':    self.object_name,
+            'zone':      self.zone_name,
+            'zone_type': self.zone_type,
+            'position':  self.position,
+            'timestamp': self.timestamp,
+        }
+        return _MAP[key]
+
+    def get(self, key: str, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+
+# =========================================================
+# SIMULATION WORLD
+# =========================================================
 
 class SimulationWorld:
-    """
-    Main simulation world container
-    
-    Manages:
-    - Static objects (buildings, walls, terrain)
-    - Dynamic objects (people, vehicles, drones)
-    - Sensors (cameras, LiDAR, IMU)
-    - Zones (restricted, caution, safe areas)
-    - Events and detections
-    """
-    
     def __init__(self):
-        """Initialize simulation world"""
-        # Object containers
-        self.static_objects = []
-        self.dynamic_objects = []
-        self.sensors = []
-        self.zones = []
-        
-        # Simulation time
-        self.time = 0.0
-        self.dt = 0.033  # 30 FPS default
-        
-        # World bounds
-        self.bounds = {
-            'min': np.array([-100, -100, 0]),
-            'max': np.array([100, 100, 50])
-        }
-        
-        # Event log
-        self.events = []
-        self.max_events = 1000
-        
-        # Statistics
-        self.stats = {
-            'total_updates': 0,
-            'total_detections': 0,
-            'total_violations': 0
-        }
-    
-    # =========================================================================
-    # OBJECT MANAGEMENT
-    # =========================================================================
-    
-    def add_static_object(self, obj):
-        """
-        Add static object to world
-        
-        Args:
-            obj: Static object (Building, Wall, Ground, etc.)
-            
-        Returns:
-            The added object
-        """
-        self.static_objects.append(obj)
-        print(f"  Added static: {obj.name}")
-        return obj
-    
+        self.dynamic_objects: List = []
+        self.static_objects:  List = []
+        self.sensors:         List = []
+        self.zones:           List[Zone] = []
+        self.simulation_time: float = 0.0
+        self._alert_count:    int   = 0
+
+    # ----------------------------------------------------------
+    # ADD METHODS
+    # ----------------------------------------------------------
+
     def add_dynamic_object(self, obj):
-        """
-        Add dynamic object to world
-        
-        Args:
-            obj: Dynamic object (Person, Vehicle, Drone, etc.)
-            
-        Returns:
-            The added object
-        """
         self.dynamic_objects.append(obj)
-        print(f"  Added dynamic: {obj.name} ({obj.__class__.__name__})")
-        return obj
-    
-    def add_sensor(self, sensor):  # FIXED: was add_sensors (plural)
-        """
-        Add sensor to world
-        
-        Args:
-            sensor: Sensor object (VirtualCamera, VirtualLiDAR, etc.)
-            
-        Returns:
-            The added sensor
-        """
+
+    def add_static_object(self, obj):
+        self.static_objects.append(obj)
+
+    def add_sensor(self, sensor):
         self.sensors.append(sensor)
-        print(f"  Added sensor: {sensor.name} ({sensor.__class__.__name__})")
-        return sensor
-    
-    def add_zone(self, name: str, zone_type: str, polygon: List) -> Zone:
-        """
-        Add security zone to world
-        
-        Args:
-            name: Zone name
-            zone_type: 'restricted', 'caution', or 'safe'
-            polygon: List of [x, y] points defining the zone boundary
-            
-        Returns:
-            Created Zone object
-        """
-        zone = Zone(
-            name=name,
-            type=zone_type,
-            polygon=np.array(polygon)
-        )
-        
+
+    def add_zone(self, name: str, zone_type: str, polygon):
+        zone = Zone(name, zone_type, polygon)
         self.zones.append(zone)
-        print(f"  Added zone: {name} ({zone_type})")
         return zone
-    
-    def remove_object(self, obj):
-        """Remove object from world"""
-        if obj in self.static_objects:
-            self.static_objects.remove(obj)
-        elif obj in self.dynamic_objects:
-            self.dynamic_objects.remove(obj)
-        elif obj in self.sensors:
-            self.sensors.remove(obj)
-    
-    def get_object_by_name(self, name: str):
-        """Find object by name"""
-        # Check static objects
-        for obj in self.static_objects:
-            if obj.name == name:
-                return obj
-        
-        # Check dynamic objects
+
+    # ----------------------------------------------------------
+    # UPDATE LOOP
+    # ----------------------------------------------------------
+
+    def update(self, dt: float):
+        self.simulation_time += dt
         for obj in self.dynamic_objects:
-            if obj.name == name:
-                return obj
-        
-        # Check sensors
-        for sensor in self.sensors:
-            if sensor.name == name:
-                return sensor
-        
-        return None
-    
-    # =========================================================================
-    # SIMULATION UPDATE
-    # =========================================================================
-    
-    def update(self, dt: Optional[float] = None):
+            obj.update(dt)
+
+    # ----------------------------------------------------------
+    # DETECTION
+    # ----------------------------------------------------------
+
+    def get_detections(self) -> List[Dict[str, Any]]:
         """
-        Update world simulation
-        
-        Args:
-            dt: Time step in seconds (uses default if None)
-        """
-        if dt is None:
-            dt = self.dt
-        
-        # Update all dynamic objects
-        for obj in self.dynamic_objects:
-            if hasattr(obj, 'update'):
-                obj.update(dt)
-        
-        # Update sensors (if they have update methods)
-        for sensor in self.sensors:
-            if hasattr(sensor, 'update'):
-                sensor.update(dt)
-        
-        # Update time
-        self.time += dt
-        self.stats['total_updates'] += 1
-    
-    # =========================================================================
-    # DETECTION & SENSING
-    # =========================================================================
-    
-    def get_detections(self) -> List[Dict]:
-        """
-        Get all detections from all objects
-        
-        Returns:
-            List of detection dictionaries
+        Returns list of dicts with keys: name, position, state
+        (format expected by main.py)
         """
         detections = []
-        
         for obj in self.dynamic_objects:
-            detection = {
-                'name': obj.name,
-                'type': obj.__class__.__name__.lower(),
-                'position': obj.position.tolist() if hasattr(obj, 'position') else [0, 0, 0],
-                'velocity': obj.velocity.tolist() if hasattr(obj, 'velocity') else [0, 0, 0],
-                'speed': float(np.linalg.norm(obj.velocity)) if hasattr(obj, 'velocity') else 0.0,
-                'timestamp': self.time
-            }
-            
-            # Add state if available
-            if hasattr(obj, 'state'):
-                detection['state'] = str(obj.state)
-            
-            # Add rotation if available
-            if hasattr(obj, 'rotation'):
-                detection['rotation'] = float(obj.rotation)
-            
-            detections.append(detection)
-        
-        self.stats['total_detections'] = len(detections)
+            pos   = obj.get_position() if hasattr(obj, 'get_position') else getattr(obj, 'position', np.zeros(3))
+            state = getattr(obj, 'state', None)
+            detections.append({
+                'name':     obj.name,
+                'position': pos,
+                'state':    state.name if hasattr(state, 'name') else str(state),
+            })
         return detections
-    
-    # Alias for backwards compatibility
-    def get_detection(self) -> List[Dict]:
-        """Alias for get_detections()"""
-        return self.get_detections()
-    
-    # =========================================================================
-    # ZONE MANAGEMENT
-    # =========================================================================
-    
-    def check_zone_violations(self) -> List[Dict]:
+
+    # Legacy alias (kept for compatibility)
+    def get_detection(self):
+        return [obj.name for obj in self.dynamic_objects]
+
+    # ----------------------------------------------------------
+    # ZONE VIOLATIONS
+    # ----------------------------------------------------------
+
+    def check_zone_violations(self):
         """
-        Check for objects in restricted/caution zones
-        
-        Returns:
-            List of violation dictionaries
+        Returns list of ZoneViolation dataclass objects.
+        Also supports dict-style access via main.py: v['object'], v['zone'], v['zone_type']
+        Each ZoneViolation has: .object_name, .zone_name, .zone_type, .position, .timestamp
         """
         violations = []
-        
-        for zone in self.zones:
-            # Only check restricted and caution zones
-            if zone.type not in ['restricted', 'caution']:
-                continue
-            
-            for obj in self.dynamic_objects:
-                if not hasattr(obj, 'position'):
-                    continue
-                
-                # Check if object is in zone
-                if self._point_in_polygon(obj.position[:2], zone.polygon):
-                    violation = {
-                        'object': obj.name,
-                        'object_type': obj.__class__.__name__.lower(),
-                        'zone': zone.name,
-                        'zone_type': zone.type,
-                        'position': obj.position.copy(),
-                        'timestamp': self.time
-                    }
-                    violations.append(violation)
-                    
-                    # Log event
-                    self._log_event('zone_violation', violation)
-        
-        self.stats['total_violations'] += len(violations)
+        for obj in self.dynamic_objects:
+            pos = (obj.get_position() if hasattr(obj, 'get_position')
+                   else getattr(obj, 'position', np.zeros(3)))
+
+            for zone in self.zones:
+                if zone.zone_type in ("restricted", "caution"):
+                    if self._point_in_polygon(pos[:2], zone.polygon):
+                        v = ZoneViolation(
+                            object_name = obj.name,
+                            zone_name   = zone.name,
+                            zone_type   = zone.zone_type,
+                            position    = pos.copy(),
+                            timestamp   = self.simulation_time,
+                        )
+                        violations.append(v)
+                        self._alert_count += 1
         return violations
-    
-    def _point_in_polygon(self, point: np.ndarray, polygon: np.ndarray) -> bool:
+
+    # ----------------------------------------------------------
+    # ASTAS CONTEXT SNAPSHOT
+    # ----------------------------------------------------------
+
+    def get_astas_context(self) -> Dict[str, Any]:
         """
-        Check if point is inside polygon (ray casting algorithm)
-        
-        Args:
-            point: [x, y] coordinates
-            polygon: Nx2 array of polygon vertices
-            
-        Returns:
-            True if point is inside polygon
+        Returns rich context dict.  Keys accessed by main.py:
+            zone, num_detections, loitering, rapid_movement, speed, time_of_day
         """
-        x, y = point
-        n = len(polygon)
-        inside = False
-        
-        p1x, p1y = polygon[0]
-        for i in range(n + 1):
-            p2x, p2y = polygon[i % n]
-            
-            if y > min(p1y, p2y):
-                if y <= max(p1y, p2y):
-                    if x <= max(p1x, p2x):
-                        if p1y != p2y:
-                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                        if p1x == p2x or x <= xinters:
-                            inside = not inside
-            
-            p1x, p1y = p2x, p2y
-        
-        return inside
-    
-    def get_zone_at_position(self, position: np.ndarray) -> Optional[Zone]:
-        """
-        Get zone at given position
-        
-        Args:
-            position: [x, y, z] or [x, y] coordinates
-            
-        Returns:
-            Zone object or None
-        """
-        for zone in self.zones:
-            if self._point_in_polygon(position[:2], zone.polygon):
-                return zone
-        return None
-    
-    # =========================================================================
-    # SPATIAL QUERIES
-    # =========================================================================
-    
-    def get_objects_near(self, position: np.ndarray, radius: float) -> List:
-        """
-        Get objects within radius of position
-        
-        Args:
-            position: Center position [x, y, z]
-            radius: Search radius in meters
-            
-        Returns:
-            List of nearby objects
-        """
-        nearby = []
-        
-        for obj in self.dynamic_objects:
-            if not hasattr(obj, 'position'):
-                continue
-            
-            dist = np.linalg.norm(obj.position - position)
-            if dist <= radius:
-                nearby.append(obj)
-        
-        return nearby
-    
-    def get_objects_in_zone(self, zone_name: str) -> List:
-        """
-        Get all objects in a specific zone
-        
-        Args:
-            zone_name: Name of the zone
-            
-        Returns:
-            List of objects in zone
-        """
-        # Find zone
-        zone = None
-        for z in self.zones:
-            if z.name == zone_name:
-                zone = z
-                break
-        
-        if zone is None:
-            return []
-        
-        objects_in_zone = []
-        for obj in self.dynamic_objects:
-            if not hasattr(obj, 'position'):
-                continue
-            
-            if self._point_in_polygon(obj.position[:2], zone.polygon):
-                objects_in_zone.append(obj)
-        
-        return objects_in_zone
-    
-    # =========================================================================
-    # ASTAS CONTEXT (for AI/ML models)
-    # =========================================================================
-    
-    def get_astas_context(self) -> Dict:
-        """
-        Get comprehensive context for ASTAS (threat assessment)
-        
-        Returns:
-            Dictionary with all relevant context information
-        """
-        detections = self.get_detections()
-        violations = self.check_zone_violations()
-        
-        # Determine primary object type
-        primary_object = 'unknown'
-        if detections:
-            primary_object = detections[0]['type']
-        
-        # Determine zone status
-        zone_status = 'safe'
-        if violations:
-            # Prioritize restricted over caution
-            for v in violations:
-                if v['zone_type'] == 'restricted':
-                    zone_status = 'restricted'
-                    break
-                elif v['zone_type'] == 'caution':
-                    zone_status = 'caution'
-        
-        # Check for loitering
-        loitering = False
-        for obj in self.dynamic_objects:
-            if hasattr(obj, 'state') and 'LOITERING' in str(obj.state):
-                loitering = True
-                break
-        
-        # Check for rapid movement
+        detections     = self.get_detections()
+        num_det        = len(detections)
+        loitering      = False
         rapid_movement = False
-        max_speed = 0.0
+        max_speed      = 0.0
+
         for obj in self.dynamic_objects:
-            if hasattr(obj, 'velocity'):
-                speed = np.linalg.norm(obj.velocity)
-                max_speed = max(max_speed, speed)
-                if speed > 4.0:  # > 4 m/s = rapid
+            state = getattr(obj, 'state', None)
+            if state is not None:
+                sname = state.name if hasattr(state, 'name') else str(state)
+                if sname.upper() in ('LOITERING',):
+                    loitering = True
+                if sname.upper() in ('RUNNING',):
                     rapid_movement = True
-        
-        # Determine time of day (simplified - could be enhanced)
-        time_of_day = 'day' if 6 <= (self.time % 86400) / 3600 < 18 else 'night'
-        
+            vel = getattr(obj, 'velocity', None)
+            if vel is not None:
+                spd = float(np.linalg.norm(vel))
+                if spd > max_speed:
+                    max_speed = spd
+
+        violations = self.check_zone_violations()
+        zone = violations[0].zone_type if violations else 'safe'
+
+        hour = int((self.simulation_time % 86400) / 3600)
+        if 6 <= hour < 20:
+            time_of_day = 'day'
+        elif 20 <= hour < 22 or 4 <= hour < 6:
+            time_of_day = 'dusk' if (20 <= hour < 22) else 'dawn'
+        else:
+            time_of_day = 'night'
+
         return {
-            # Basic info
-            'detections': [d['type'] for d in detections],
-            'num_detections': len(detections),
-            'primary_object': primary_object,
-            
-            # Zone info
-            'zone': zone_status,
-            'restricted_area': zone_status == 'restricted',
-            'num_violations': len(violations),
-            
-            # Motion analysis
-            'motion_type': 'rapid' if rapid_movement else 'moderate',
-            'speed': max_speed,
-            'loitering': loitering,
-            'rapid_movement': rapid_movement,
-            
-            # Environmental
-            'time_of_day': time_of_day,
-            'time_in_area': self.time,
-            
-            # Sensor data
-            'lidar_objects': len(detections),
-            'num_sensors': len(self.sensors),
-            
-            # Historical
-            'previous_alerts': self.stats['total_violations'],
-            'total_updates': self.stats['total_updates'],
-            
-            # Placeholder for advanced features
-            'direction_changes': 0,
-            'audio_events': [],
-            'vibration': False,
-            'unusual_pattern': False
+            'simulation_time':  self.simulation_time,
+            'zone':             zone,
+            'num_detections':   num_det,
+            'loitering':        loitering,
+            'rapid_movement':   rapid_movement,
+            'speed':            f"{max_speed:.1f} m/s",
+            'time_of_day':      time_of_day,
+            'detections':       [d['name'] for d in detections],
+            'restricted_area':  any(v.zone_type == 'restricted' for v in violations),
+            'dynamic_objects':  len(self.dynamic_objects),
+            'static_objects':   len(self.static_objects),
+            'zones':            len(self.zones),
+            'sensors':          len(self.sensors),
+            'previous_alerts':  self._alert_count,
         }
-    
-    # =========================================================================
-    # EVENT LOGGING
-    # =========================================================================
-    
-    def _log_event(self, event_type: str, data: Dict):
-        """
-        Log an event
-        
-        Args:
-            event_type: Type of event
-            data: Event data dictionary
-        """
-        event = {
-            'type': event_type,
-            'timestamp': self.time,
-            'data': data
-        }
-        
-        self.events.append(event)
-        
-        # Limit event history
-        if len(self.events) > self.max_events:
-            self.events.pop(0)
-    
-    def get_recent_events(self, event_type: Optional[str] = None, 
-                         count: int = 10) -> List[Dict]:
-        """
-        Get recent events
-        
-        Args:
-            event_type: Filter by event type (None = all types)
-            count: Maximum number of events to return
-            
-        Returns:
-            List of recent events
-        """
-        filtered_events = self.events
-        
-        if event_type is not None:
-            filtered_events = [e for e in self.events if e['type'] == event_type]
-        
-        return filtered_events[-count:]
-    
-    # =========================================================================
-    # STATISTICS & INFO
-    # =========================================================================
-    
-    def get_statistics(self) -> Dict:
-        """Get world statistics"""
+
+    # ----------------------------------------------------------
+    # PRINT SUMMARY
+    # ----------------------------------------------------------
+
+    def summary(self) -> dict:
+        """Return world stats as a dict (used by simulation_3d_launch)."""
         return {
-            'static_objects': len(self.static_objects),
+            'simulation_time': self.simulation_time,
             'dynamic_objects': len(self.dynamic_objects),
-            'sensors': len(self.sensors),
-            'zones': len(self.zones),
-            'simulation_time': self.time,
-            'total_updates': self.stats['total_updates'],
-            'total_detections': self.stats['total_detections'],
-            'total_violations': self.stats['total_violations'],
-            'total_events': len(self.events)
+            'static_objects':  len(self.static_objects),
+            'zones':           len(self.zones),
+            'sensors':         len(self.sensors),
+            'total_alerts':    self._alert_count,
         }
-    
+
     def print_summary(self):
-        """Print world summary"""
-        print("\n" + "=" * 70)
-        print("SIMULATION WORLD SUMMARY")
-        print("=" * 70)
-        
-        stats = self.get_statistics()
-        
-        print(f"Static Objects:  {stats['static_objects']}")
-        print(f"Dynamic Objects: {stats['dynamic_objects']}")
-        print(f"Sensors:         {stats['sensors']}")
-        print(f"Zones:           {stats['zones']}")
-        print(f"\nSimulation Time: {stats['simulation_time']:.2f}s")
-        print(f"Total Updates:   {stats['total_updates']}")
-        print(f"Total Violations: {stats['total_violations']}")
-        print(f"Total Events:    {stats['total_events']}")
-        print("=" * 70 + "\n")
-    
-    # =========================================================================
-    # SERIALIZATION
-    # =========================================================================
-    
-    def to_dict(self) -> Dict:
-        """Serialize world to dictionary"""
-        return {
-            'time': self.time,
-            'dt': self.dt,
-            'bounds': {
-                'min': self.bounds['min'].tolist(),
-                'max': self.bounds['max'].tolist()
-            },
-            'stats': self.stats.copy(),
-            'num_static_objects': len(self.static_objects),
-            'num_dynamic_objects': len(self.dynamic_objects),
-            'num_sensors': len(self.sensors),
-            'num_zones': len(self.zones)
-        }
-    
-    def __repr__(self):
-        return (f"SimulationWorld(static={len(self.static_objects)}, "
-                f"dynamic={len(self.dynamic_objects)}, "
-                f"sensors={len(self.sensors)}, "
-                f"zones={len(self.zones)}, "
-                f"time={self.time:.2f}s)")
+        s = self.summary()
+        print(f"\n  ── World Summary ──────────────────────────────────")
+        print(f"  Simulation time : {s['simulation_time']:.2f}s")
+        print(f"  Dynamic objects : {s['dynamic_objects']}")
+        print(f"  Static objects  : {s['static_objects']}")
+        print(f"  Zones           : {s['zones']}")
+        print(f"  Sensors         : {s['sensors']}")
+        print(f"  Total alerts    : {s['total_alerts']}")
 
+    # ----------------------------------------------------------
+    # INTERNAL GEOMETRY
+    # ----------------------------------------------------------
 
-# =============================================================================
-# TESTING
-# =============================================================================
-if __name__ == "__main__":
-    print("Testing SimulationWorld...")
-    
-    # Create world
-    world = SimulationWorld()
-    print(f"Created: {world}")
-    
-    # Add zones
-    world.add_zone(
-        name="restricted_zone",
-        zone_type="restricted",
-        polygon=[[0, 0], [10, 0], [10, 10], [0, 10]]
-    )
-    
-    world.add_zone(
-        name="safe_zone",
-        zone_type="safe",
-        polygon=[[-10, -10], [0, -10], [0, 0], [-10, 0]]
-    )
-    
-    # Create mock object for testing
-    class MockObject:
-        def __init__(self, name, pos):
-            self.name = name
-            self.position = np.array(pos)
-            self.velocity = np.array([1.0, 0.0, 0.0])
-        
-        def update(self, dt):
-            self.position += self.velocity * dt
-    
-    # Add objects
-    obj1 = MockObject("obj1", [5, 5, 0])  # In restricted zone
-    obj2 = MockObject("obj2", [-5, -5, 0])  # In safe zone
-    
-    world.add_dynamic_object(obj1)
-    world.add_dynamic_object(obj2)
-    
-    # Update simulation
-    for i in range(10):
-        world.update(0.1)
-    
-    # Get detections
-    detections = world.get_detections()
-    print(f"\nDetections: {len(detections)}")
-    
-    # Check violations
-    violations = world.check_zone_violations()
-    print(f"Violations: {len(violations)}")
-    
-    # Get context
-    context = world.get_astas_context()
-    print(f"\nASTAS Context:")
-    print(f"  Zone: {context['zone']}")
-    print(f"  Detections: {context['num_detections']}")
-    print(f"  Speed: {context['speed']:.2f} m/s")
-    
-    # Print summary
-    world.print_summary()
-    
-    print("\n✓ SimulationWorld test complete")
-
-
+    def _point_in_polygon(self, point, polygon) -> bool:
+        """Ray-casting point-in-polygon."""
+        x, y   = float(point[0]), float(point[1])
+        inside = False
+        j      = len(polygon) - 1
+        for i in range(len(polygon)):
+            xi, yi = float(polygon[i][0]), float(polygon[i][1])
+            xj, yj = float(polygon[j][0]), float(polygon[j][1])
+            if ((yi > y) != (yj > y)) and \
+               (x < (xj - xi) * (y - yi) / (yj - yi + 1e-9) + xi):
+                inside = not inside
+            j = i
+        return inside
